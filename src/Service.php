@@ -1,290 +1,180 @@
 <?php
+namespace Box\Mod\OAuth2;
 
-/**
- * FOSSBilling.
- *
- * @copyright FOSSBilling (https://www.fossbilling.org)
- * @license   Apache-2.0
- *
- * Copyright FOSSBilling 2022
- * This software may contain code previously used in the BoxBilling project.
- * Copyright BoxBilling, Inc 2011-2021
- *
- * This source file is subject to the Apache-2.0 License that is bundled
- * with this source code in the file LICENSE
- */
-
-/**
- * This file is a delegate for module. Class does not extend any other class.
- *
- * All methods provided in this example are optional, but function names are
- * still reserved.
- */
-
-namespace Box\Mod\Example;
-
-use FOSSBilling\InformationException;
-
-class Service
+class Service implements \Box\InjectionAwareInterface
 {
     protected $di;
 
-    public function setDi(\Pimple\Container|null $di): void
+    public function setDi($di)
     {
         $this->di = $di;
     }
 
-    /**
-     * Any module may define this function to return an array of permission keys that are related to it.
-     * You may define either a `bool` or a `select` permission type.
-     * Modules do not need to define this function.
-     * 
-     * We've included an example of how to check the permissions under the `/api/Admin.php` file and some front-end usage under `/html_admin/mod_example_index.html.twig`
-     * 
-     * @return array 
-     */
-    public function getModulePermissions(): array
+    public function getDi()
     {
-        return [
-            'do_something' => [
-                'type' => 'bool',
-                'display_name' => 'Do something',
-                'description' => 'Allows the staff member to do something',
-            ],
-            'a_select' => [
-                'type' => 'select',
-                'display_name' => 'A select',
-                'description' => 'This is an example of the select permission type',
-                'options' => [
-                    'value_1' => 'Value 1',
-                    'value_2' => 'Value 2',
-                    'value_3' => 'Value 3',
-                ]
-            ],
-            'manage_settings' => [], // Tells FOSSBilling that there should be a permission key to manage the module's settings (admin/extension/settings/example)
+        return $this->di;
+    }
+
+    public function install()
+    {
+        // Create oauth2_providers table
+        $sql = "
+            CREATE TABLE IF NOT EXISTS `oauth2_providers` (
+                `id` bigint(20) NOT NULL AUTO_INCREMENT,
+                `name` varchar(255) NOT NULL,
+                `client_id` varchar(255) NOT NULL,
+                `client_secret` varchar(255) NOT NULL,
+                `redirect_uri` varchar(255) NOT NULL,
+                `scope` varchar(255),
+                `auth_url` varchar(255) NOT NULL,
+                `token_url` varchar(255) NOT NULL,
+                `userinfo_url` varchar(255) NOT NULL,
+                `created_at` datetime NOT NULL,
+                `updated_at` datetime NOT NULL,
+                PRIMARY KEY (`id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+        ";
+
+        $this->di['db']->exec($sql);
+
+        // Create oauth2_user_tokens table
+        $sql = "
+            CREATE TABLE IF NOT EXISTS `oauth2_user_tokens` (
+                `id` bigint(20) NOT NULL AUTO_INCREMENT,
+                `client_id` varchar(255) NOT NULL,
+                `user_id` bigint(20) NOT NULL,
+                `access_token` text NOT NULL,
+                `refresh_token` text,
+                `expires_at` datetime NOT NULL,
+                `created_at` datetime NOT NULL,
+                `updated_at` datetime NOT NULL,
+                PRIMARY KEY (`id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+        ";
+
+        $this->di['db']->exec($sql);
+
+        return true;
+    }
+
+    public function getConfig()
+    {
+        $config = include __DIR__ . '/config/oauth2.php';
+        return $config;
+    }
+
+    public function getProviderConfig($name)
+    {
+        $config = $this->getConfig();
+        return $config['providers'][$name] ?? null;
+    }
+
+    public function getAuthorizationUrl($provider)
+    {
+        $config = $this->getProviderConfig($provider);
+        if (!$config) {
+            throw new \Exception('Provider not found');
+        }
+
+        $params = [
+            'client_id' => $config['client_id'],
+            'redirect_uri' => $config['redirect_uri'],
+            'response_type' => 'code',
+            'scope' => $config['scope'],
+            'state' => $this->generateState()
         ];
+
+        return $config['auth_url'] . '?' . http_build_query($params);
     }
 
-    /**
-     * Method to install the module. In most cases you will use this
-     * to create database tables for your module.
-     *
-     * If your module isn't very complicated then the extension_meta
-     * database table might be enough.
-     *
-     * @return bool
-     *
-     * @throws InformationException
-     */
-    public function install(): bool
+    public function handleCallback($provider, $code)
     {
-        // Execute SQL script if needed
-        $db = $this->di['db'];
-        $db->exec('SELECT NOW()');
-
-        // throw new InformationException("Throw exception to terminate module installation process with a message", array(), 123);
-        return true;
-    }
-
-    /**
-     * Method to uninstall module. In most cases you will use this
-     * to remove database tables for your module.
-     *
-     * You also can opt to keep the data in the database if you want
-     * to keep the data for future use.
-     *
-     * @return bool
-     *
-     * @throws InformationException
-     */
-    public function uninstall(): bool
-    {
-        // throw new InformationException("Throw exception to terminate module uninstallation process with a message", array(), 124);
-        return true;
-    }
-
-    /**
-     * Method to update module. When you release new version to
-     * extensions.fossbilling.org then this method will be called
-     * after the new files are placed.
-     *
-     * @param array $manifest - information about the new module version
-     *
-     * @return bool
-     *
-     * @throws InformationException
-     */
-    public function update(array $manifest): bool
-    {
-        // throw new InformationException("Throw exception to terminate module update process with a message", array(), 125);
-        return true;
-    }
-
-    /**
-     * Method is used to create search query for paginated list.
-     * Usually there is one paginated list per module.
-     *
-     * @param array $data
-     *
-     * @return array() = list of 2 parameters: array($sql, $params)
-     */
-    public function getSearchQuery(array $data): array
-    {
-        $params = [];
-        $sql = "SELECT meta_key, meta_value
-            FROM extension_meta
-            WHERE extension = 'example'";
-
-        $client_id = $data['client_id'] ?? null;
-
-        if (null !== $client_id) {
-            $sql .= ' AND client_id = :client_id';
-            $params[':client_id'] = $client_id;
+        $config = $this->getProviderConfig($provider);
+        if (!$config) {
+            throw new \Exception('Provider not found');
         }
 
-        $sql .= ' ORDER BY created_at DESC';
+        // Exchange authorization code for access token
+        $tokenResponse = $this->getAccessToken($config, $code);
 
-        return [$sql, $params];
+        // Get user info using access token
+        $userInfo = $this->getUserInfo($config, $tokenResponse['access_token']);
+
+        // Find or create user
+        $user = $this->findOrCreateUser($userInfo);
+
+        // Store tokens
+        $this->storeTokens($config['client_id'], $user['id'], $tokenResponse);
+
+        return $user;
     }
 
-    /**
-     * Methods is a delegate for one database row.
-     *
-     * @param array $row - array representing one database row
-     * @param string $role - guest|client|admin who is calling this method
-     * @param bool $deep - true|false deep or light version of result to return to API
-     *
-     * @return array
-     */
-    public function toApiArray(array $row, string $role = 'guest', bool $deep = true): array
+    protected function getAccessToken($config, $code)
     {
-        return $row;
-    }
-
-    /**
-     * Example event hook. Any module can hook to any FOSSBilling event and perform actions.
-     *
-     * Make sure extension is enabled before testing this event.
-     *
-     * NOTE: IF you have DEBUG mode set to TRUE then all events with params
-     * are logged to data/log/hook_*.log file. Check this file to see what
-     * kind of parameters are passed to event.
-     *
-     * In this example we are going to count how many times client failed
-     * to enter correct login details
-     *
-     * @return void
-     *
-     * @throws InformationException
-     */
-    public static function onEventClientLoginFailed(\Box_Event $event): void
-    {
-        // getting Dependency Injector
-        $di = $event->getDi();
-
-        // @note almost in all cases you will need Admin API
-        $api = $di['api_admin'];
-
-        // sometimes you may need guest API
-        // $api_guest = $di['api_guest'];
-
-        $params = $event->getParameters();
-
-        // @note To debug parameters by throwing an exception
-        // throw new Exception(print_r($params, 1));
-
-        // Use RedBean ORM in any place of FOSSBilling where API call is not enough
-        // First we need to find if we already have a counter for this IP
-        // We will use extension_meta table to store this data.
-        $values = [
-            'ext' => 'example',
-            'rel_type' => 'ip',
-            'rel_id' => $params['ip'],
-            'meta_key' => 'counter',
+        $params = [
+            'client_id' => $config['client_id'],
+            'client_secret' => $config['client_secret'],
+            'code' => $code,
+            'redirect_uri' => $config['redirect_uri'],
+            'grant_type' => 'authorization_code'
         ];
-        $meta = $di['db']->findOne('extension_meta', 'extension = :ext AND rel_type = :rel_type AND rel_id = :rel_id AND meta_key = :meta_key', $values);
-        if (!$meta) {
-            $meta = $di['db']->dispense('extension_meta');
-            // $count->client_id = null; // client id is not known in this situation
-            $meta->extension = 'mod_example';
-            $meta->rel_type = 'ip';
-            $meta->rel_id = $params['ip'];
-            $meta->meta_key = 'counter';
-            $meta->created_at = date('Y-m-d H:i:s');
-        }
-        $meta->meta_value = $meta->meta_value + 1;
-        $meta->updated_at = date('Y-m-d H:i:s');
-        $di['db']->store($meta);
 
-        // Now we can perform task depending on how many times wrong details were entered
-
-        // We can log event if it repeats for 2 time
-        if ($meta->meta_value > 2) {
-            $api->activity_log(['m' => 'Client failed to enter correct login details ' . $meta->meta_value . ' time(s)']);
-        }
-
-        // if client gets funky, we block him
-        if ($meta->meta_value > 30) {
-            throw new InformationException('You have failed to login too many times. Contact support.');
-        }
+        $response = $this->di['curl']->post($config['token_url'], $params);
+        return json_decode($response, true);
     }
 
-    /**
-     * This event hook is registered in example module client API call.
-     */
-    public static function onAfterClientCalledExampleModule(\Box_Event $event): void
+    protected function getUserInfo($config, $accessToken)
     {
-        // error_log('Called event from example module');
-
-        $di = $event->getDi();
-        $params = $event->getParameters();
-
-        $meta = $di['db']->dispense('extension_meta');
-        $meta->extension = 'mod_example';
-        $meta->meta_key = 'event_params';
-        $meta->meta_value = json_encode($params);
-        $meta->created_at = date('Y-m-d H:i:s');
-        $meta->updated_at = date('Y-m-d H:i:s');
-        $di['db']->store($meta);
+        $headers = ['Authorization: Bearer ' . $accessToken];
+        $response = $this->di['curl']->get($config['userinfo_url'], [], $headers);
+        return json_decode($response, true);
     }
 
-    /**
-     * Example event hook for public ticket and set event return value.
-     */
-    public static function onBeforeGuestPublicTicketOpen(\Box_Event $event)
+    protected function findOrCreateUser($userInfo)
     {
-        /* Uncomment lines below in order to see this function in action */
+        // Implement user creation/lookup logic based on OAuth provider's user info
+        // This is just an example implementation
+        $email = $userInfo['email'];
 
-        /*
-        $data            = $event->getParameters();
-        $data['status']  = 'closed';
-        $data['subject'] = 'Altered subject';
-        $data['message'] = 'Altered text';
-        $event->setReturnValue($data);
-        */
+        $sql = "SELECT * FROM client WHERE email = ?";
+        $user = $this->di['db']->getRow($sql, [$email]);
+
+        if (!$user) {
+            // Create new user
+            $password = $this->di['password']->generate();
+            $data = [
+                'email' => $email,
+                'name' => $userInfo['name'] ?? '',
+                'password' => $this->di['password']->hashIt($password),
+                'status' => 'active',
+                'created_at' => date('Y-m-d H:i:s'),
+                'updated_at' => date('Y-m-d H:i:s'),
+            ];
+
+            $this->di['db']->insert('client', $data);
+            return $this->di['db']->getRow($sql, [$email]);
+        }
+
+        return $user;
     }
 
-    /**
-     * Example email sending.
-     */
-    public static function onAfterClientOrderCreate(\Box_Event $event)
+    protected function storeTokens($clientId, $userId, $tokenResponse)
     {
-        /* Uncomment lines below in order to see this function in action */
+        $data = [
+            'client_id' => $clientId,
+            'user_id' => $userId,
+            'access_token' => $tokenResponse['access_token'],
+            'refresh_token' => $tokenResponse['refresh_token'] ?? null,
+            'expires_at' => date('Y-m-d H:i:s', time() + ($tokenResponse['expires_in'] ?? 3600)),
+            'created_at' => date('Y-m-d H:i:s'),
+            'updated_at' => date('Y-m-d H:i:s'),
+        ];
 
-        /*
-         $di = $event->getDi();
-         $api    = $di['api_admin'];
-         $params = $event->getParameters();
+        $this->di['db']->insert('oauth2_user_tokens', $data);
+    }
 
-         $email = array();
-         $email['to_client'] = $params['client_id'];
-         $email['code']      = 'mod_example_email'; //@see modules/Example/html_email/mod_example_email.html.twig
-
-         // these parameters are available in email template
-         $email['order']     = $api->order_get(array('id'=>$params['id']));
-         $email['other']     = 'any other value';
-
-         $api->email_template_send($email);
-        */
+    protected function generateState()
+    {
+        return bin2hex(random_bytes(16));
     }
 }
